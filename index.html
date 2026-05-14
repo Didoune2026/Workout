@@ -79,6 +79,10 @@ html,body{height:100%;background:var(--bg);font-family:-apple-system,BlinkMacSys
 </style>
 </head>
 <body>
+<!-- Stickman fixe, jamais remplacé par render() -->
+<div id="stickman-fixed" style="display:none;position:fixed;bottom:20px;right:16px;width:90px;height:90px;background:var(--card);border-radius:50%;border:0.5px solid var(--border);box-shadow:0 2px 8px rgba(0,0,0,0.1);z-index:100;display:flex;align-items:center;justify-content:center;">
+  <svg id="anim-svg-fixed" viewBox="0 0 110 110" width="80" height="80"></svg>
+</div>
 <!-- Unique container — innerHTML swapped on every screen transition -->
 <div id="root"></div>
 
@@ -178,18 +182,39 @@ const ANIMS={
 function getAnim(k){return ANIMS[k]||ANIMS.squat;}
 
 let AF={};
+function showStickman(animKey){
+  const wrap=document.getElementById('stickman-fixed');
+  if(wrap){wrap.style.display='flex';}
+  startAnim('anim-svg-fixed', animKey);
+}
+function hideStickman(){
+  stopAnim('anim-svg-fixed');
+  const wrap=document.getElementById('stickman-fixed');
+  if(wrap){wrap.style.display='none';}
+}
+// Chaque instance d'animation a un token unique.
+// Si le DOM a été remplacé (render), le token ne correspond plus et le RAF s'arrête.
+let AF_TOKEN={};
 function startAnim(id,key){
-  stopAnim(id);let t=0;
+  stopAnim(id);
+  let t=0;
   const fn=getAnim(key);
+  const token=Date.now()+Math.random();
+  AF_TOKEN[id]=token;
   function fr(){
+    // Stoppe si le token a changé (nouveau render) ou si l'élément n'existe plus
+    if(AF_TOKEN[id]!==token){return;}
     const el=document.getElementById(id);
-    if(!el){delete AF[id];return;}
-    t+=0.016;el.innerHTML=fn(t%1);
+    if(!el){delete AF[id];delete AF_TOKEN[id];return;}
+    try{t+=0.016;el.innerHTML=fn(t%1);}catch(e){delete AF[id];delete AF_TOKEN[id];return;}
     AF[id]=requestAnimationFrame(fr);
   }
   AF[id]=requestAnimationFrame(fr);
 }
-function stopAnim(id){if(AF[id]){cancelAnimationFrame(AF[id]);delete AF[id];}}
+function stopAnim(id){
+  if(AF_TOKEN[id]) delete AF_TOKEN[id];
+  if(AF[id]){cancelAnimationFrame(AF[id]);delete AF[id];}
+}
 function stopAllAnim(){Object.keys(AF).forEach(stopAnim);}
 
 // ── RENDER : remplace tout le DOM ────────────────────────────
@@ -305,7 +330,7 @@ function timerCircleSVG(arcId,color){
 
 // ── SCREENS ──────────────────────────────────────────────────
 
-function showStart(){
+function showStart(){hideStickman();
   S.phase='idle';
   const hist=loadHistory();
   const prevHTML=prog.map((g,i)=>`
@@ -388,7 +413,7 @@ function showWU(){
       </div>
       <div class="nxt">Suivant : <strong>${nxt}</strong></div>
     </div>`);
-  startAnim('anim-svg',st.anim||'march');
+  showStickman(st.anim||'march');
   speak(st.name);
   countdown(st.duration,'timer-num','main-arc',()=>{S.wuIdx++;showWU();});
 }
@@ -433,7 +458,7 @@ function showEX(){
       </div>
       <div class="nxt">Suivant : <strong>${nxtLbl()}</strong></div>
     </div>`);
-  startAnim('anim-svg',ex.anim||'squat');
+  showStickman(ex.anim||'squat');
   speak(buildAnnonce(ex));
   if(ex.duration){
     document.getElementById('timer-sub').textContent='restant';
@@ -455,7 +480,7 @@ function exDone(){
 }
 
 // ── REST — render complet à chaque fois ───────────────────────
-function showRest(sec,type,nxtTxt,cb){
+function showRest(sec,type,nxtTxt,cb){hideStickman();
   clearAll();stopAllAnim();
   // Annule tout timer résiduel
   window._restCb=null;
@@ -548,14 +573,14 @@ function showST(){
       </div>
       <div class="nxt">Suivant : <strong>${nxt}</strong></div>
     </div>`);
-  startAnim('anim-svg',st.anim||'breathing');
+  showStickman(st.anim||'breathing');
   speak(st.name);
   countdown(st.duration,'timer-num','main-arc',()=>{S.stIdx++;showST();});
 }
 function skipST(){clearAll();S.stIdx++;showST();}
 
 // ── END ───────────────────────────────────────────────────────
-function endSession(){
+function endSession(){hideStickman();
   clearAll();stopAllAnim();
   const el=Math.round((Date.now()-S.sessStart)/1000);
   const m=Math.floor(el/60),s=el%60;
