@@ -538,7 +538,18 @@ let prog=[];
 let S={phase:'idle',wuIdx:0,gIdx:0,sIdx:0,exIdx:0,stIdx:0,paused:false,iv:null,restCb:null,sessStart:null,sw:0,swIv:null};
 
 // ── UI HELPERS ─────────────────────────────────────────────────
-function showScreen(id){document.querySelectorAll('.screen').forEach(s=>s.classList.remove('visible'));document.getElementById(id)?.classList.add('visible');window.scrollTo(0,0);}
+function showScreen(id){
+  // Cache tous les écrans
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('visible'));
+  const target=document.getElementById(id);
+  if(!target) return;
+  target.classList.add('visible');
+  // Force Chrome iOS à repeindre en modifiant un style puis en le restaurant
+  document.body.style.display='none';
+  void document.body.offsetHeight;
+  document.body.style.display='';
+  window.scrollTo(0,0);
+}
 function buildBar(id,n,cur){const el=document.getElementById(id);if(!el)return;el.innerHTML=Array.from({length:n},(_,i)=>`<div class="pseg ${i<cur?'d':i===cur?'a':''}"></div>`).join('');}
 function updArc(id,f){const el=document.getElementById(id);if(!el)return;el.setAttribute('stroke-dashoffset',Math.max(0,327*(1-f)));}
 function fmt(s){return Math.floor(s/60)+':'+(s%60<10?'0':'')+s%60;}
@@ -551,7 +562,7 @@ function speak(txt){
   window.speechSynthesis.speak(u);
 }
 
-function clearAll(){if(S.iv){clearInterval(S.iv);S.iv=null;}if(S.swIv){clearInterval(S.swIv);S.swIv=null;}}
+function clearAll(){if(S.iv){clearInterval(S.iv);S.iv=null;}if(S.swIv){clearInterval(S.swIv);S.swIv=null;}if(S._restRaf){cancelAnimationFrame(S._restRaf);S._restRaf=null;}}
 
 function countdown(sec,tId,arcId,cb){
   clearAll();let r=sec,s10=false,s3=false;
@@ -626,27 +637,77 @@ function exDone(){
 
 // ── REST ───────────────────────────────────────────────────────
 function startRest(sec,type,nxtTxt,cb){
-  clearAll();stopAllAnim();S.restCb=cb;S.phase='rest';showScreen('s-rest');
+  clearAll();stopAllAnim();
+  S.restCb=cb; S.phase='rest';
+  showScreen('s-rest');
   document.getElementById('rest-tag').textContent=type==='group'?'Repos entre circuits':'Repos entre séries';
   document.getElementById('rest-desc').textContent=type==='group'?'Récupérez bien':'Soufflez';
   document.getElementById('rest-nxt').textContent=nxtTxt;
   const fill=document.getElementById('rbar');
   fill.style.background=type==='group'?'#1D9E75':'#EF9F27';
+  fill.style.transition='none';
   fill.style.width='100%';
-  fill.style.transition='width 1s linear';
-  let r=sec,s10=false,s3=false;
-  document.getElementById('rest-n').textContent=r;
+  const elN=document.getElementById('rest-n');
+  elN.textContent=sec;
   speak(type==='group'?'Repos. Une minute.':'Repos. Trente secondes.');
-  S.iv=setInterval(()=>{
-    if(S.paused)return;r--;
-    document.getElementById('rest-n').textContent=r;
-    fill.style.width=Math.round(r/sec*100)+'%';
-    if(r===10&&!s10){speak('dix secondes');s10=true;}
-    if(r===3&&!s3){speak('trois, deux, un');s3=true;}
-    if(r===0){clearAll();speak('Go !');cb();}
-  },1000);
+  // Timer basé sur Date.now() : immunisé contre le throttling iOS
+  // et contre les dérives de setInterval
+  const deadline=Date.now()+(sec*1000);
+  let lastShown=-1, s10=false, s3=false, done=false;
+  function tick(){
+    if(done) return;
+    if(S.paused){ S.iv=setTimeout(tick,200); return; }
+    const remaining=Math.max(0,(deadline-Date.now())/1000);
+    const rInt=Math.ceil(remaining);
+    if(rInt!==lastShown){
+      lastShown=rInt;
+      elN.textContent=rInt;
+      fill.style.width=Math.round(remaining/sec*100)+'%';
+      if(rInt===10&&!s10){speak('dix secondes');s10=true;}
+      if(rInt===3&&!s3){speak('trois, deux, un');s3=true;}
+    }
+    if(remaining<=0){
+      done=true;
+      if(S.iv){clearTimeout(S.iv);S.iv=null;}
+      speak('Go !');
+      // Affiche le bouton Continuer — l'utilisateur tape pour avancer
+      // Contourne le bug Chrome iOS qui bloque les transitions auto
+      elN.textContent='0';
+      fill.style.width='0%';
+      const btnCont=document.getElementById('rest-continue');
+      if(btnCont){btnCont.style.display='block';}
+      const btnSkip=document.getElementById('rest-skip-btn');
+      if(btnSkip){btnSkip.style.display='none';}
+      return;
+    }
+    // Intervalle court (200ms) pour ne pas rater la fin sur iOS
+    S.iv=setTimeout(tick,200);
+  }
+  S.iv=setTimeout(tick,200);
 }
-function skipRest(){clearAll();if(S.restCb)S.restCb();}
+function skipRest(){if(S._restRaf){cancelAnimationFrame(S._restRaf);S._restRaf=null;}clearAll();const cb=S.restCb;S.restCb=null;if(cb)cb();}
+function doContinue(){
+  // Remet le bouton dans son état initial pour la prochaine fois
+  const btnCont=document.getElementById('rest-continue');
+  const btnSkip=document.getElementById('rest-skip-btn');
+  if(btnCont) btnCont.style.display='none';
+  if(btnSkip) btnSkip.style.display='block';
+  const cb=S.restCb; S.restCb=null;
+  if(cb) cb();
+}
+
+// Fix iOS Safari: quand l'écran se déverrouille ou revient au premier plan,
+// force la reprise si un timer de repos était en cours
+document.addEventListener('visibilitychange', function(){
+  if(document.visibilityState==='visible'){
+    // Si on était en pause forcée (pas pause manuelle), rien à faire
+    // Si le reste était à 0 et le cb pas encore appelé, on le déclenche
+    if(S.phase==='rest' && !S.paused && !S.iv && S.restCb){
+      const cb=S.restCb; S.restCb=null;
+      speak('Go !'); cb();
+    }
+  }
+});
 
 // ── STRETCH ────────────────────────────────────────────────────
 function runST(){
